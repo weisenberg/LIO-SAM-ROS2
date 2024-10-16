@@ -45,7 +45,6 @@ POINT_CLOUD_REGISTER_POINT_STRUCT (PointXYZIRPYT,
 
 typedef PointXYZIRPYT  PointTypePose;
 
-
 class mapOptimization : public ParamServer
 {
 
@@ -90,8 +89,8 @@ public:
 
     pcl::PointCloud<PointType>::Ptr laserCloudCornerLast; // corner feature set from odoOptimization
     pcl::PointCloud<PointType>::Ptr laserCloudSurfLast; // surf feature set from odoOptimization
-    pcl::PointCloud<PointType>::Ptr laserCloudCornerLastDS; // downsampled corner feature set from odoOptimization
-    pcl::PointCloud<PointType>::Ptr laserCloudSurfLastDS; // downsampled surf feature set from odoOptimization
+    pcl::PointCloud<PointType>::Ptr laserCloudCornerLastDS; // downsampled corner featuer set from odoOptimization
+    pcl::PointCloud<PointType>::Ptr laserCloudSurfLastDS; // downsampled surf featuer set from odoOptimization
 
     pcl::PointCloud<PointType>::Ptr laserCloudOri;
     pcl::PointCloud<PointType>::Ptr coeffSel;
@@ -303,6 +302,26 @@ public:
 
         // extract info and feature cloud
         cloudInfo = *msgIn;
+
+                // Open file in append mode
+        std::ofstream file("mapOptimization_cloudInfo.txt", std::ios::app);
+        if (!file.is_open()) {
+            std::cerr << "Unable to open file!" << std::endl;
+        }
+
+        // Write each field of cloudInfo to the file
+        file << "Initial Guess X: " << cloudInfo.initial_guess_x << std::endl;
+        file << "Initial Guess Y: " << cloudInfo.initial_guess_y << std::endl;
+        file << "Initial Guess Z: " << cloudInfo.initial_guess_z << std::endl;
+        file << "Initial Guess Roll: " << cloudInfo.initial_guess_roll << std::endl;
+        file << "Initial Guess Pitch: " << cloudInfo.initial_guess_pitch << std::endl;
+        file << "Initial Guess Yaw: " << cloudInfo.initial_guess_yaw << std::endl;
+
+        file << "--------------------------" << std::endl;
+
+        // Close file
+        file.close();
+
         pcl::fromROSMsg(msgIn->cloud_corner,  *laserCloudCornerLast);
         pcl::fromROSMsg(msgIn->cloud_surface, *laserCloudSurfLast);
 
@@ -1118,8 +1137,8 @@ public:
                 if (planeValid) {
                     float pd2 = pa * pointSel.x + pb * pointSel.y + pc * pointSel.z + pd;
 
-                    float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointOri.x * pointOri.x
-                            + pointOri.y * pointOri.y + pointOri.z * pointOri.z));
+                    float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
+                            + pointSel.y * pointSel.y + pointSel.z * pointSel.z));
 
                     coeff.x = s * pa;
                     coeff.y = s * pb;
@@ -1359,12 +1378,6 @@ public:
         if (cloudKeyPoses3D->points.empty())
             return true;
 
-        if (sensor == SensorType::LIVOX)
-        {
-            if (timeLaserInfoCur - cloudKeyPoses6D->back().time > 1.0)
-                return true;
-        }
-
         Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyPoses6D->back());
         Eigen::Affine3f transFinal = pcl::getTransformation(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                             transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
@@ -1373,7 +1386,7 @@ public:
         pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw);
 
         if (abs(roll)  < surroundingkeyframeAddingAngleThreshold &&
-            abs(pitch) < surroundingkeyframeAddingAngleThreshold &&
+            abs(pitch) < surroundingkeyframeAddingAngleThreshold && 
             abs(yaw)   < surroundingkeyframeAddingAngleThreshold &&
             sqrt(x*x + y*y + z*z) < surroundingkeyframeAddingDistThreshold)
             return false;
@@ -1640,6 +1653,19 @@ public:
         laserOdometryROS.header.stamp = timeLaserInfoStamp;
         laserOdometryROS.header.frame_id = odometryFrame;
         laserOdometryROS.child_frame_id = "odom_mapping";
+
+        // Open file in append mode
+        std::ofstream file("mapOptimization_laserOdometry_XYZ.txt", std::ios::app);
+        if (!file.is_open()) {
+            std::cerr << "Unable to open file!" << std::endl;
+        }
+
+        // Save the position values to the text file
+        file << "Position X: " << transformTobeMapped[3] << std::endl;
+        file << "Position Y: " << transformTobeMapped[4] << std::endl;
+        file << "Position Z: " << transformTobeMapped[5] << std::endl;
+        file.close(); // Close the file after writing
+
         laserOdometryROS.pose.pose.position.x = transformTobeMapped[3];
         laserOdometryROS.pose.pose.position.y = transformTobeMapped[4];
         laserOdometryROS.pose.pose.position.z = transformTobeMapped[5];

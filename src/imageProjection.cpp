@@ -1,5 +1,6 @@
 #include "utility.hpp"
 #include "lio_sam/msg/cloud_info.hpp"
+#include "pcl/filters/impl/filter.hpp"
 
 struct VelodynePointXYZIRT
 {
@@ -74,7 +75,6 @@ private:
     pcl::PointCloud<PointType>::Ptr   fullCloud;
     pcl::PointCloud<PointType>::Ptr   extractedCloud;
 
-    int ringFlag = 0;
     int deskewFlag;
     cv::Mat rangeMat;
 
@@ -87,8 +87,6 @@ private:
     double timeScanCur;
     double timeScanEnd;
     std_msgs::msg::Header cloudHeader;
-
-    vector<int> columnIdnCountVec;
 
 
 public:
@@ -190,10 +188,10 @@ public:
         // cout << "x: " << thisImu.angular_velocity.x << 
         //       ", y: " << thisImu.angular_velocity.y << 
         //       ", z: " << thisImu.angular_velocity.z << endl;
-        // double imuRoll, imuPitch, imuYaw;
-        // tf2::Quaternion orientation;
-        // tf2::fromMsg(thisImu.orientation, orientation);
-        // tf2::Matrix3x3(orientation).getRPY(imuRoll, imuPitch, imuYaw);
+        double imuRoll, imuPitch, imuYaw;
+        tf2::Quaternion orientation;
+        tf2::convert(thisImu.orientation, orientation);
+        tf2::Matrix3x3(orientation).getRPY(imuRoll, imuPitch, imuYaw);
         // cout << "IMU roll pitch yaw: " << endl;
         // cout << "roll: " << imuRoll << ", pitch: " << imuPitch << ", yaw: " << imuYaw << endl << endl;
     }
@@ -213,12 +211,19 @@ public:
             return;
 
         projectPointCloud();
+        // cout << "1- projectPointCloud: WORKS" << endl;
 
         cloudExtraction();
+        // cout << "2- cloudExtraction: WORKS" << endl;
+
 
         publishClouds();
+        // cout << "3- publishClouds: WORKS" << endl;
+
 
         resetParameters();
+        // cout << "4- resetParameters: WORKS" << endl;
+
     }
 
     bool cachePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& laserCloudMsg)
@@ -231,9 +236,9 @@ public:
         // convert cloud
         currentCloudMsg = std::move(cloudQueue.front());
         cloudQueue.pop_front();
-        if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX)
+        if (sensor == SensorType::VELODYNE)
         {
-            pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);  
+            pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);
         }
         else if (sensor == SensorType::OUSTER)
         {
@@ -259,15 +264,21 @@ public:
             rclcpp::shutdown();
         }
 
+        // remove NaN
+        std::vector<int> indices;
+        pcl::removeNaNFromPointCloud(*laserCloudIn, *laserCloudIn, indices);
+        
         // get timestamp
         cloudHeader = currentCloudMsg.header;
         timeScanCur = stamp2Sec(cloudHeader.stamp);
         timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
-    
-        // remove Nan
-        vector<int> indices;
-        pcl::removeNaNFromPointCloud(*laserCloudIn, *laserCloudIn, indices);
+        
+        // if (!laserCloudIn->points.back().time)
+        // {
+        //     cout << "points.back().time is: " << laserCloudIn->points.back().time;
+        // }
 
+        
         // check dense flag
         if (laserCloudIn->is_dense == false)
         {
@@ -276,7 +287,7 @@ public:
         }
 
         // check ring channel
-        // we will skip the ring check in case of velodyne - as we calculate the ring value downstream (line 572)
+        static int ringFlag = 0;
         if (ringFlag == 0)
         {
             ringFlag = -1;
@@ -290,12 +301,8 @@ public:
             }
             if (ringFlag == -1)
             {
-                if (sensor == SensorType::VELODYNE) {
-                    ringFlag = 2;
-                } else {
-                    RCLCPP_ERROR(get_logger(), "Point cloud ring channel not available, please configure your point cloud data!");
-                    rclcpp::shutdown();
-                }
+                RCLCPP_ERROR(get_logger(), "Point cloud ring channel not available, please configure your point cloud data!");
+                rclcpp::shutdown();
             }
         }
 
@@ -328,7 +335,12 @@ public:
             stamp2Sec(imuQueue.front().header.stamp) > timeScanCur ||
             stamp2Sec(imuQueue.back().header.stamp) < timeScanEnd)
         {
-            RCLCPP_INFO(get_logger(), "Waiting for IMU data ...");
+            if(imuQueue.empty()){
+                RCLCPP_INFO(get_logger(), "IMU queue is empty!");
+
+            }
+            double imuStampSec = stamp2Sec(imuQueue.front().header.stamp);  // Assuming stamp2Sec returns seconds
+            RCLCPP_INFO(get_logger(), "Waiting for IMU data ... imuQueue.front().header.stamp: %.6f", imuStampSec);
             return false;
         }
 
@@ -571,36 +583,18 @@ public:
                 continue;
 
             int rowIdn = laserCloudIn->points[i].ring;
-            // if sensor is a velodyne (ringFlag = 2) calculate rowIdn based on number of scans
-            if (ringFlag == 2) { 
-                float verticalAngle =
-                    atan2(thisPoint.z,
-                        sqrt(thisPoint.x * thisPoint.x + thisPoint.y * thisPoint.y)) *
-                    180 / M_PI;
-                rowIdn = (verticalAngle + (N_SCAN - 1)) / 2.0;
-            }
-
             if (rowIdn < 0 || rowIdn >= N_SCAN)
                 continue;
 
             if (rowIdn % downsampleRate != 0)
                 continue;
 
-            int columnIdn = -1;
-            if (sensor == SensorType::VELODYNE || sensor == SensorType::OUSTER)
-            {
-                float horizonAngle = atan2(thisPoint.x, thisPoint.y) * 180 / M_PI;
-                static float ang_res_x = 360.0/float(Horizon_SCAN);
-                columnIdn = -round((horizonAngle-90.0)/ang_res_x) + Horizon_SCAN/2;
-                if (columnIdn >= Horizon_SCAN)
-                    columnIdn -= Horizon_SCAN;
-            }
-            else if (sensor == SensorType::LIVOX)
-            {
-                columnIdn = columnIdnCountVec[rowIdn];
-                columnIdnCountVec[rowIdn] += 1;
-            }
+            float horizonAngle = atan2(thisPoint.x, thisPoint.y) * 180 / M_PI;
 
+            static float ang_res_x = 360.0/float(Horizon_SCAN);
+            int columnIdn = -round((horizonAngle-90.0)/ang_res_x) + Horizon_SCAN/2;
+            if (columnIdn >= Horizon_SCAN)
+                columnIdn -= Horizon_SCAN;
 
             if (columnIdn < 0 || columnIdn >= Horizon_SCAN)
                 continue;
